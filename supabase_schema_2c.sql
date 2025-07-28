@@ -352,6 +352,53 @@ CREATE TABLE user_progress (
     UNIQUE(user_id)
 );
 
+-- Billing history table - tracks user subscription and payment records
+CREATE TABLE billing_history (
+    id SERIAL PRIMARY KEY,
+    user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    
+    -- Plan information
+    plan_id TEXT REFERENCES plan(id), -- which plan was purchased
+    plan_name TEXT NOT NULL, -- snapshot of plan name at time of purchase
+    plan_type plan_type NOT NULL,
+    
+    -- Transaction details
+    transaction_id TEXT UNIQUE, -- external payment processor transaction ID
+    payment_processor TEXT, -- 'stripe', 'paypal', 'manual', etc.
+    payment_method TEXT, -- 'card', 'paypal', 'bank_transfer', etc.
+    
+    -- Pricing information (snapshot at time of purchase)
+    amount_cents INTEGER NOT NULL, -- amount paid in cents
+    currency TEXT DEFAULT 'USD',
+    original_price_cents INTEGER, -- original price if there was a discount
+    discount_amount_cents INTEGER DEFAULT 0, -- discount applied
+    discount_code TEXT, -- promo code used
+    
+    -- Billing period
+    billing_period_start TIMESTAMP WITH TIME ZONE,
+    billing_period_end TIMESTAMP WITH TIME ZONE,
+    
+    -- Transaction status
+    status TEXT NOT NULL, -- 'pending', 'completed', 'failed', 'refunded', 'cancelled'
+    payment_date TIMESTAMP WITH TIME ZONE,
+    
+    -- Refund information
+    refund_date TIMESTAMP WITH TIME ZONE,
+    refund_amount_cents INTEGER,
+    refund_reason TEXT,
+    
+    -- Subscription management
+    subscription_id TEXT, -- external subscription ID for recurring plans
+    is_auto_renewal BOOLEAN DEFAULT false,
+    next_billing_date TIMESTAMP WITH TIME ZONE,
+    
+    -- Metadata
+    notes TEXT, -- admin notes or special circumstances
+    metadata JSONB -- flexible field for additional payment processor data
+);
+
 -- Job application tracking (optional feature)
 CREATE TABLE job_application (
     id SERIAL PRIMARY KEY,
@@ -438,6 +485,13 @@ CREATE INDEX idx_interview_record_session_id ON interview_record(interview_sessi
 CREATE INDEX idx_interview_record_created_at ON interview_record(created_at);
 CREATE INDEX idx_interviewer_personality ON interviewer(personality_type);
 CREATE INDEX idx_user_progress_user_id ON user_progress(user_id);
+CREATE INDEX idx_billing_history_user_id ON billing_history(user_id);
+CREATE INDEX idx_billing_history_plan_id ON billing_history(plan_id);
+CREATE INDEX idx_billing_history_status ON billing_history(status);
+CREATE INDEX idx_billing_history_transaction_id ON billing_history(transaction_id);
+CREATE INDEX idx_billing_history_subscription_id ON billing_history(subscription_id);
+CREATE INDEX idx_billing_history_payment_date ON billing_history(payment_date);
+CREATE INDEX idx_billing_history_billing_period ON billing_history(billing_period_start, billing_period_end);
 CREATE INDEX idx_job_application_user_id ON job_application(user_id);
 CREATE INDEX idx_job_application_status ON job_application(status);
 
@@ -469,6 +523,9 @@ CREATE TRIGGER update_interview_session_updated_at BEFORE UPDATE ON interview_se
 CREATE TRIGGER update_user_progress_updated_at BEFORE UPDATE ON user_progress 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_billing_history_updated_at BEFORE UPDATE ON billing_history 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_job_application_updated_at BEFORE UPDATE ON job_application 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -480,22 +537,21 @@ INSERT INTO plan (id, name, description, plan_type, price_cents, allowed_intervi
 ('unlimited_monthly', 'Unlimited Monthly', 'Unlimited interviews with all features', 'subscription', 1999, -1, 60, 5, ARRAY['empathetic', 'analytical', 'creative', 'aggressive', 'casual', 'formal'], 10, 4, true);
 
 -- Insert sample interviewers with different personalities
-INSERT INTO interviewer (agent_id, name, description, personality_description, image, empathy, exploration, rapport, speed, personality_type, industry_focus, sample_questions, is_system_default) VALUES
-('tech-sarah-001', 'Sarah Chen', 'Senior Engineering Manager at top tech company', 'Direct, technical-focused, appreciates concise answers and problem-solving approach', 'interviewers/sarah-tech.png', 6, 9, 7, 8, 'analytical', 'technology', 
+INSERT INTO interviewer (agent_id, name, description, personality_description, image, audio, empathy, exploration, rapport, speed, personality_type, industry_focus, sample_questions, is_system_default) VALUES
+('tech-sarah-001', 'Sarah Chen', 'Senior Engineering Manager at top tech company', 'Direct, technical-focused, appreciates concise answers and problem-solving approach', '/interviewers/Lisa.png', '/audio/Lisa.wav', 6, 9, 7, 8, 'analytical', 'technology', 
  ARRAY['Walk me through your approach to debugging a complex system issue', 'How do you handle technical debt in your projects?', 'Describe a time you had to learn a new technology quickly'], true),
 
-('creative-marcus-001', 'Marcus Rodriguez', 'Creative Director with 15 years in advertising', 'Collaborative, story-focused, values creativity and innovative thinking', 'interviewers/marcus-creative.png', 9, 8, 9, 6, 'creative', 'design',
+('creative-marcus-001', 'Marcus Rodriguez', 'Creative Director with 15 years in advertising', 'Collaborative, story-focused, values creativity and innovative thinking', '/interviewers/Bob.png', '/audio/Bob.wav', 9, 8, 9, 6, 'creative', 'design',
  ARRAY['Tell me about a project where you had to think outside the box', 'How do you handle creative differences with stakeholders?', 'Walk me through your creative process'], true),
 
-('finance-david-001', 'David Kim', 'Investment Banking VP on Wall Street', 'High-pressure, rapid-fire questioning, results and numbers oriented', 'interviewers/david-finance.png', 4, 7, 5, 10, 'aggressive', 'finance',
+('finance-david-001', 'David Kim', 'Investment Banking VP on Wall Street', 'High-pressure, rapid-fire questioning, results and numbers oriented', '/interviewers/Bob.png', '/audio/Bob.wav', 4, 7, 5, 10, 'aggressive', 'finance',
  ARRAY['Give me three reasons why this company is a good investment', 'How do you perform under extreme pressure?', 'Walk me through a DCF model'], true),
 
-('hr-jennifer-001', 'Jennifer Thompson', 'Head of People Operations', 'Warm, behavioral-focused, emphasizes culture fit and soft skills', 'interviewers/jennifer-hr.png', 10, 6, 10, 7, 'empathetic', 'general',
+('hr-jennifer-001', 'Jennifer Thompson', 'Head of People Operations', 'Warm, behavioral-focused, emphasizes culture fit and soft skills', '/interviewers/Lisa.png', '/audio/Lisa.wav', 10, 6, 10, 7, 'empathetic', 'general',
  ARRAY['Tell me about a time you had to work with a difficult team member', 'How do you handle work-life balance?', 'What motivates you in your career?'], true),
 
-('consultant-alex-001', 'Alex Parker', 'Principal Consultant at Big 4 firm', 'Structured, case-study focused, analytical and methodical', 'interviewers/alex-consultant.png', 7, 9, 8, 7, 'analytical', 'consulting',
+('consultant-alex-001', 'Alex Parker', 'Principal Consultant at Big 4 firm', 'Structured, case-study focused, analytical and methodical', '/interviewers/Bob.png', '/audio/Bob.wav', 7, 9, 8, 7, 'analytical', 'consulting',
  ARRAY['How would you approach entering a new market?', 'Walk me through how you would solve this business problem', 'What framework would you use to analyze this situation?'], true);
-
 -- Insert sample jobs for practice
 INSERT INTO job (job_title, company_name, job_description, job_requirements, salary_range, location, work_type, employment_type, industry, seniority_level, department, source, is_active, is_featured, is_system_default, tags, skill_keywords, quality_score) VALUES
 ('Senior Software Engineer', 'Google', 'Join our team to build scalable systems that serve billions of users. You will work on cutting-edge technologies and solve complex technical challenges.', 
@@ -537,6 +593,7 @@ ALTER TABLE interview_session ENABLE ROW LEVEL SECURITY;
 ALTER TABLE interview_record ENABLE ROW LEVEL SECURITY;
 ALTER TABLE interview_feedback ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_progress ENABLE ROW LEVEL SECURITY;
+ALTER TABLE billing_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE job_application ENABLE ROW LEVEL SECURITY;
 
 -- Users can only access their own data
@@ -568,6 +625,9 @@ CREATE POLICY "Users can manage their own feedback" ON interview_feedback
     FOR ALL USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users can view their own progress" ON user_progress
+    FOR ALL USING (auth.uid()::text = user_id);
+
+CREATE POLICY "Users can view their own billing history" ON billing_history
     FOR ALL USING (auth.uid()::text = user_id);
 
 CREATE POLICY "Users can manage their own applications" ON job_application
