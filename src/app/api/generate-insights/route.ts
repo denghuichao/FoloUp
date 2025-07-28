@@ -37,7 +37,7 @@ export async function POST(req: Request, res: Response) {
     );
 
     const baseCompletion = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: process.env.OPENAI_MODEL || "deepseek-chat",
       messages: [
         {
           role: "system",
